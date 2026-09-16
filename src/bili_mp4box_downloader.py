@@ -91,6 +91,7 @@ class DownloadApp:
         self.qr_image = None
         self.keep_m4s = tk.BooleanVar(value=False)
         self._build()
+        self.root.bind_all('<MouseWheel>', self._on_wheel)
         self.root.after(100, self._poll)
 
     def _build(self):
@@ -104,7 +105,19 @@ class DownloadApp:
         tk.Label(header, text='本地 MP4Box 版', bg='#ffffff', fg='#777777', font=('Microsoft YaHei UI', 9)).pack(side='left', padx=8)
         self.login_btn = tk.Button(header, text='扫码登录' if not any(c.name == 'DedeUserID' for c in COOKIES) else '已登录', command=self.login, relief='flat', bg='#f2f2f2', fg='#333333', padx=10, pady=5, cursor='hand2')
         self.login_btn.pack(side='right')
-        frm = tk.Frame(shell, bg='#ffffff'); frm.pack(fill='both', expand=True, padx=16, pady=(4, 16))
+        body = tk.Frame(shell, bg='#ffffff'); body.pack(fill='both', expand=True)
+        self.canvas = tk.Canvas(body, bg='#ffffff', highlightthickness=0, bd=0, yscrollincrement=20)
+        self.scrollbar = tk.Scrollbar(body, orient='vertical', command=self.canvas.yview, width=12,
+                                      borderwidth=0, elementborderwidth=0, relief='flat', highlightthickness=0,
+                                      troughcolor='#ffffff', bg='#c4c4c4', activebackground='#9e9e9e')
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side='right', fill='y')
+        self.canvas.pack(side='left', fill='both', expand=True)
+        holder = tk.Frame(self.canvas, bg='#ffffff')
+        self.canvas_window = self.canvas.create_window((0, 0), window=holder, anchor='nw')
+        holder.bind('<Configure>', self._on_content_configure)
+        self.canvas.bind('<Configure>', self._on_canvas_configure)
+        frm = tk.Frame(holder, bg='#ffffff'); frm.pack(fill='both', expand=True, padx=16, pady=(4, 16))
         tk.Label(frm, text='视频链接', bg='#ffffff', fg='#555555', font=('Microsoft YaHei UI', 9)).pack(anchor='w')
         row = tk.Frame(frm, bg='#ffffff'); row.pack(fill='x', pady=(5, 12))
         self.url = tk.Entry(row, relief='solid', bd=1, font=('Microsoft YaHei UI', 10)); self.url.pack(side='left', fill='x', expand=True, ipady=7)
@@ -133,6 +146,17 @@ class DownloadApp:
         self.download_btn.pack(side='left', fill='x', expand=True)
         tk.Button(buttons, text='取消', command=self.cancel.set, relief='flat', bg='#eeeeee', fg='#333333', padx=16, pady=9, cursor='hand2').pack(side='left', padx=(8, 0))
         self.log = tk.Text(frm, height=9, state='disabled', relief='flat', bg='#f5f5f5', fg='#555555', padx=8, pady=8, font=('Consolas', 9)); self.log.pack(fill='both', expand=True, pady=(12, 0))
+
+    def _on_content_configure(self, _event):
+        self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfigure(self.canvas_window, width=event.width)
+
+    def _on_wheel(self, event):
+        if self.root.winfo_containing(event.x_root, event.y_root) is self.log: return None
+        self.canvas.yview_scroll(-3 if event.delta > 0 else 3, 'units')
+        return 'break'
 
     def write_log(self, text):
         self.log.configure(state='normal'); self.log.insert('end', text + '\n'); self.log.see('end'); self.log.configure(state='disabled')
@@ -328,6 +352,7 @@ class DownloadApp:
         if kind == 'resolved':
             self.info = event[1]; self.pages = self.info.get('pages', [])
             self.page_index = 0; self._render_page_buttons()
+            self.canvas.yview_moveto(0)
             self._set_default_filename()
             owner = self.info.get('owner', {}).get('name', '')
             self.video_card.configure(text=f'{self.info["title"]}\n{owner}  ·  {len(self.pages)} 个分 P')

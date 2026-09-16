@@ -7,7 +7,7 @@ bili_login_cookies.json
 *.video.m4s
 *.audio.m4s
 *.mp4
-!release/*.exe
+release/
 .venv/
 .idea/
 .vscode/
