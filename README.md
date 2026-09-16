@@ -75,7 +75,7 @@ python -m pip install -r requirements.txt
 生成文件位于：
 
 ```text
-dist\B站 MP4Box 下载器.exe
+dist\bilibili-downloader.exe
 ```
 
 构建脚本使用相对路径，会把 `vendor\MP4Box.exe` 和 `assets\icon.ico` 一起打入 EXE。构建完成后，EXE 不再依赖这些外部文件。

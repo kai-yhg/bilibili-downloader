@@ -12,7 +12,7 @@ python -m PyInstaller `
   --clean `
   --onefile `
   --windowed `
-  --name 'B站 MP4Box 下载器' `
+  --name 'bilibili-downloader' `
   --icon $Icon `
   --add-data "$Icon;." `
   --add-binary "$Mp4Box;." `
@@ -26,4 +26,4 @@ python -m PyInstaller `
   $Source
 
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
-Write-Host "Built: $(Join-Path $DistDir 'B站 MP4Box 下载器.exe')"
+Write-Host "Built: $(Join-Path $DistDir 'bilibili-downloader.exe')"
