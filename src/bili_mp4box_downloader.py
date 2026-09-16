@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 import http.cookiejar
@@ -230,11 +231,13 @@ class DownloadApp:
         if not self.info or not self.qualities: return
         self.cancel.clear(); self.download_btn.configure(state='disabled'); self.progress['value'] = 0
         page = self.pages[self.page_index]; qn = self.qualities[self.quality_index]['id']
-        folder = os.path.abspath(self.output.get().strip())
-        filename = safe_name(self.filename.get().strip())
-        if filename.lower().endswith('.mp4'): filename = filename[:-4]
-        if not folder or not filename:
+        raw_folder = self.output.get().strip()
+        raw_filename = self.filename.get().strip()
+        if raw_filename.lower().endswith('.mp4'): raw_filename = raw_filename[:-4].strip()
+        if not raw_folder or not raw_filename:
             self.download_btn.configure(state='normal'); messagebox.showerror('无法下载', '请选择保存目录并填写文件名'); return
+        folder = os.path.abspath(raw_folder)
+        filename = safe_name(raw_filename)
         threading.Thread(target=self._download, args=(page, qn, folder, filename, self.keep_m4s.get()), daemon=True).start()
 
     def _download(self, page, qn, folder, base, keep_m4s):
@@ -271,9 +274,12 @@ class DownloadApp:
         block = 8 * 1024 * 1024
         done = os.path.getsize(path) if os.path.exists(path) else 0
         total = 0
+        stalled = 0
         with open(path, 'ab' if done else 'wb') as out:
-            while not total or done < total:
+            while True:
                 if self.cancel.is_set(): raise RuntimeError('下载已取消')
+                if total and done >= total: break
+                progressed = False
                 last_error = None
                 for url in urls:
                     end = done + block - 1
@@ -284,57 +290,73 @@ class DownloadApp:
                             match = re.search(r'/([0-9]+)$', content_range)
                             if match: total = int(match.group(1))
                             elif not total: total = int(response.headers.get('Content-Length') or 0)
+                            if total and done >= total: last_error = None; break
                             if done and response.status != 206: raise RuntimeError('CDN 不支持断点续传')
                             while True:
                                 data = response.read(1024 * 1024)
                                 if not data: break
-                                out.write(data); done += len(data)
+                                out.write(data); done += len(data); progressed = True
                                 self.events.put(('progress', label, done, total))
                         last_error = None
                         break
-                    except Exception as error:
+                    except urllib.error.HTTPError as error:
+                        if error.code == 416 and done: total = done; last_error = None; break
                         last_error = error
+                    except Exception as error: last_error = error
                 if last_error: raise RuntimeError(f'{label}下载失败：{last_error}')
-                if not total or done >= total: break
+                if total and done >= total: break
+                if progressed: stalled = 0
+                else:
+                    stalled += 1
+                    if stalled >= 3:
+                        if not total: break
+                        raise RuntimeError(f'{label}下载失败：连续 {stalled} 次未收到新数据，已停止重试')
+        self.events.put(('progress', label, done, total or done))
 
     def _poll(self):
         try:
             while True:
-                event = self.events.get_nowait(); kind = event[0]
-                if kind == 'resolved':
-                    self.info = event[1]; self.pages = self.info.get('pages', [])
-                    self.page_index = 0; self._render_page_buttons()
-                    self._set_default_filename()
-                    owner = self.info.get('owner', {}).get('name', '')
-                    self.video_card.configure(text=f'{self.info["title"]}\n{owner}  ·  {len(self.pages)} 个分 P')
-                    self.load_quality()
-                elif kind == 'quality':
-                    unique = {}
-                    for item in event[1]:
-                        unique.setdefault(item['id'], {'id': item['id'], 'label': QUALITY.get(item['id'], item.get('new_description', str(item['id'])) )})
-                    self.qualities = sorted(unique.values(), key=lambda x: x['id'], reverse=True)
-                    self.quality_index = 0; self._render_quality_buttons(); self.download_btn.configure(state='normal'); self.status.configure(text=f'已找到 {len(self.qualities)} 种可用清晰度')
-                elif kind == 'qr':
-                    popup = tk.Toplevel(self.root); popup.title('扫码登录 B 站'); popup.configure(bg='#ffffff'); popup.resizable(False, False)
-                    popup.protocol('WM_DELETE_WINDOW', lambda: (self.login_cancel.set(), popup.destroy(), self.login_btn.configure(text='扫码登录')))
-                    self.qr_image = ImageTk.PhotoImage(event[1]); tk.Label(popup, image=self.qr_image, bg='#ffffff').pack(padx=28, pady=(22, 8))
-                    self.qr_status = tk.Label(popup, text='请使用哔哩哔哩手机客户端扫码', bg='#ffffff', fg='#333333'); self.qr_status.pack(pady=(0, 22))
-                    threading.Thread(target=self._poll_login, args=(event[2],), daemon=True).start()
-                elif kind == 'login_status':
-                    if hasattr(self, 'qr_status') and self.qr_status.winfo_exists(): self.qr_status.configure(text=event[1])
-                elif kind == 'login_done':
-                    self.login_cancel.set()
-                    self.login_btn.configure(text='已登录')
-                    if hasattr(self, 'qr_status') and self.qr_status.winfo_exists(): self.qr_status.master.destroy()
-                    self.status.configure(text='登录成功，请重新解析视频')
-                    if self.url.get().strip(): self.resolve()
-                elif kind == 'progress':
-                    _, label, done, total = event; self.status.configure(text=f'{label}下载中：{done / 1048576:.1f} MB'); self.progress['value'] = (done / total * 100) if total else 0
-                elif kind == 'status': self.status.configure(text=event[1]); self.write_log(event[1])
-                elif kind == 'done': self.progress['value'] = 100; self.status.configure(text='完成'); self.write_log('已生成：' + event[1]); self.download_btn.configure(state='normal'); messagebox.showinfo('下载完成', event[1])
-                elif kind == 'error': self.status.configure(text='失败'); self.write_log('错误：' + event[1]); self.download_btn.configure(state='normal'); messagebox.showerror('下载失败', event[1])
-        except queue.Empty: pass
-        self.root.after(100, self._poll)
+                try: event = self.events.get_nowait()
+                except queue.Empty: break
+                try: self._handle_event(event)
+                except Exception as error: self.write_log(f'界面事件处理出错：{error}')
+        finally:
+            self.root.after(100, self._poll)
+
+    def _handle_event(self, event):
+        kind = event[0]
+        if kind == 'resolved':
+            self.info = event[1]; self.pages = self.info.get('pages', [])
+            self.page_index = 0; self._render_page_buttons()
+            self._set_default_filename()
+            owner = self.info.get('owner', {}).get('name', '')
+            self.video_card.configure(text=f'{self.info["title"]}\n{owner}  ·  {len(self.pages)} 个分 P')
+            self.load_quality()
+        elif kind == 'quality':
+            unique = {}
+            for item in event[1]:
+                unique.setdefault(item['id'], {'id': item['id'], 'label': QUALITY.get(item['id'], item.get('new_description', str(item['id'])) )})
+            self.qualities = sorted(unique.values(), key=lambda x: x['id'], reverse=True)
+            self.quality_index = 0; self._render_quality_buttons(); self.download_btn.configure(state='normal'); self.status.configure(text=f'已找到 {len(self.qualities)} 种可用清晰度')
+        elif kind == 'qr':
+            popup = tk.Toplevel(self.root); popup.title('扫码登录 B 站'); popup.configure(bg='#ffffff'); popup.resizable(False, False)
+            popup.protocol('WM_DELETE_WINDOW', lambda: (self.login_cancel.set(), popup.destroy(), self.login_btn.configure(text='扫码登录')))
+            self.qr_image = ImageTk.PhotoImage(event[1]); tk.Label(popup, image=self.qr_image, bg='#ffffff').pack(padx=28, pady=(22, 8))
+            self.qr_status = tk.Label(popup, text='请使用哔哩哔哩手机客户端扫码', bg='#ffffff', fg='#333333'); self.qr_status.pack(pady=(0, 22))
+            threading.Thread(target=self._poll_login, args=(event[2],), daemon=True).start()
+        elif kind == 'login_status':
+            if hasattr(self, 'qr_status') and self.qr_status.winfo_exists(): self.qr_status.configure(text=event[1])
+        elif kind == 'login_done':
+            self.login_cancel.set()
+            self.login_btn.configure(text='已登录')
+            if hasattr(self, 'qr_status') and self.qr_status.winfo_exists(): self.qr_status.master.destroy()
+            self.status.configure(text='登录成功，请重新解析视频')
+            if self.url.get().strip(): self.resolve()
+        elif kind == 'progress':
+            _, label, done, total = event; self.status.configure(text=f'{label}下载中：{done / 1048576:.1f} MB'); self.progress['value'] = (done / total * 100) if total else 0
+        elif kind == 'status': self.status.configure(text=event[1]); self.write_log(event[1])
+        elif kind == 'done': self.progress['value'] = 100; self.status.configure(text='完成'); self.write_log('已生成：' + event[1]); self.download_btn.configure(state='normal'); messagebox.showinfo('下载完成', event[1])
+        elif kind == 'error': self.status.configure(text='失败'); self.write_log('错误：' + event[1]); self.download_btn.configure(state='normal'); messagebox.showerror('下载失败', event[1])
 
 
 if __name__ == '__main__':
